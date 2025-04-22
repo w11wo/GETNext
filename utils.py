@@ -30,9 +30,7 @@ def zipdir(path, ziph, include_format):
         for file in files:
             if os.path.splitext(file)[-1] in include_format:
                 filename = os.path.join(root, file)
-                arcname = os.path.relpath(
-                    os.path.join(root, file), os.path.join(path, "..")
-                )
+                arcname = os.path.relpath(os.path.join(root, file), os.path.join(path, ".."))
                 ziph.write(filename, arcname)
 
 
@@ -85,9 +83,7 @@ def calculate_laplacian_matrix(adj_mat, mat_type):
         # For GCNConv
         wid_deg_mat = deg_mat + id_mat
         wid_adj_mat = adj_mat + id_mat
-        hat_rw_normd_lap_mat = np.matmul(
-            np.linalg.matrix_power(wid_deg_mat, -1), wid_adj_mat
-        )
+        hat_rw_normd_lap_mat = np.matmul(np.linalg.matrix_power(wid_deg_mat, -1), wid_adj_mat)
         return hat_rw_normd_lap_mat
     else:
         raise ValueError(f"ERROR: {mat_type} is unknown.")
@@ -142,6 +138,19 @@ def top_k_acc_last_timestep(y_true_seq, y_pred_seq, k):
     idx = np.where(top_k_rec == y_true)[0]
     if len(idx) != 0:
         return 1
+    else:
+        return 0
+
+
+def nDCG_last_timestep(y_true_seq, y_pred_seq, k):
+    """nDCG@k for next POI prediction at the last timestep"""
+    y_true = y_true_seq[-1]
+    y_pred = y_pred_seq[-1]
+    top_k_rec = y_pred.argsort()[-k:][::-1]
+    idx = np.where(top_k_rec == y_true)[0]
+    if len(idx) != 0:
+        rank = idx[0] + 1  # rank starts from 1
+        return 1 / np.log2(rank + 1)
     else:
         return 0
 

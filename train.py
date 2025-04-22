@@ -5,6 +5,7 @@ import pathlib
 import pickle
 import zipfile
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -36,13 +37,19 @@ from utils import (
     mAP_metric_last_timestep,
     MRR_metric_last_timestep,
     maksed_mse_loss,
+    nDCG_last_timestep,
 )
 
 
+def normalize_time(timestamp: str) -> float:
+    # convert YYYY-MM-DD HH:MM:SS to normed time of day
+    dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+    total_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
+    return total_seconds / (24 * 3600)
+
+
 def train(args):
-    args.save_dir = increment_path(
-        Path(args.project) / args.name, exist_ok=args.exist_ok, sep="-"
-    )
+    args.save_dir = increment_path(Path(args.project) / args.name, exist_ok=args.exist_ok, sep="-")
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
 
@@ -58,9 +65,7 @@ def train(args):
     )
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
-    formatter = logging.Formatter(
-        "%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    formatter = logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     console.setFormatter(formatter)
     logging.getLogger("").addHandler(console)
     logging.getLogger("matplotlib.font_manager").disabled = True
@@ -71,13 +76,11 @@ def train(args):
         yaml.dump(vars(args), f, sort_keys=False)
 
     # Save python code
-    zipf = zipfile.ZipFile(
-        os.path.join(args.save_dir, "code.zip"), "w", zipfile.ZIP_DEFLATED
-    )
+    zipf = zipfile.ZipFile(os.path.join(args.save_dir, "code.zip"), "w", zipfile.ZIP_DEFLATED)
     zipdir(pathlib.Path().absolute(), zipf, include_format=[".py"])
     zipf.close()
 
-    # %% ====================== Load data ======================
+    # ====================== Load data ======================
     # Read check-in train data
     train_df = pd.read_csv(args.data_train)
     val_df = pd.read_csv(args.data_val)
@@ -85,16 +88,12 @@ def train(args):
     # Build POI graph (built from train_df)
     print("Loading POI graph...")
     raw_A = load_graph_adj_mtx(args.data_adj_mtx)
-    raw_X = load_graph_node_features(
-        args.data_node_feats, args.feature1, args.feature2, args.feature3, args.feature4
-    )
+    raw_X = load_graph_node_features(args.data_node_feats, args.feature1, args.feature2, args.feature3, args.feature4)
     logging.info(
         f"raw_X.shape: {raw_X.shape}; "
         f"Four features: {args.feature1}, {args.feature2}, {args.feature3}, {args.feature4}."
     )
-    logging.info(
-        f"raw_A.shape: {raw_A.shape}; Edge from row_index to col_index with weight (frequency)."
-    )
+    logging.info(f"raw_A.shape: {raw_A.shape}; Edge from row_index to col_index with weight (frequency).")
     num_pois = raw_X.shape[0]
 
     # One-hot encoding poi categories
@@ -102,9 +101,7 @@ def train(args):
     one_hot_encoder = OneHotEncoder()
     cat_list = list(raw_X[:, 1])
     one_hot_encoder.fit(list(map(lambda x: [x], cat_list)))
-    one_hot_rlt = one_hot_encoder.transform(
-        list(map(lambda x: [x], cat_list))
-    ).toarray()
+    one_hot_rlt = one_hot_encoder.transform(list(map(lambda x: [x], cat_list))).toarray()
     num_cats = one_hot_rlt.shape[-1]
     X = np.zeros((num_pois, raw_X.shape[-1] - 1 + num_cats), dtype=np.float32)
     X[:, 0] = raw_X[:, 0]
@@ -132,18 +129,16 @@ def train(args):
     # Poi idx to cat idx
     poi_idx2cat_idx_dict = {}
     for i, row in nodes_df.iterrows():
-        poi_idx2cat_idx_dict[
-            poi_id2idx_dict[row["node_name/poi_id"]]
-        ] = cat_id2idx_dict[row[args.feature2]]
+        poi_idx2cat_idx_dict[poi_id2idx_dict[row["node_name/poi_id"]]] = cat_id2idx_dict[row[args.feature2]]
 
     # User id to index
-    user_ids = [str(each) for each in list(set(train_df["user_id"].to_list()))]
+    user_ids = [str(each) for each in list(set(train_df[args.user_id_column].to_list()))]
     user_id2idx_dict = dict(zip(user_ids, range(len(user_ids))))
 
     # Print user-trajectories count
-    traj_list = list(set(train_df["trajectory_id"].tolist()))
+    traj_list = list(set(train_df[args.trajectory_id_column].tolist()))
 
-    # %% ====================== Define Dataset ======================
+    # ====================== Define Dataset ======================
     class TrajectoryDatasetTrain(Dataset):
         def __init__(self, train_df):
             self.df = train_df
@@ -151,11 +146,13 @@ def train(args):
             self.input_seqs = []
             self.label_seqs = []
 
-            for traj_id in tqdm(set(train_df["trajectory_id"].tolist())):
-                traj_df = train_df[train_df["trajectory_id"] == traj_id]
-                poi_ids = traj_df["POI_id"].to_list()
+            for traj_id in tqdm(set(train_df[args.trajectory_id_column].tolist())):
+                traj_df = train_df[train_df[args.trajectory_id_column] == traj_id]
+                user_id = traj_df[args.user_id_column].to_list()[0]
+                poi_ids = traj_df[args.poi_id_column].to_list()
                 poi_idxs = [poi_id2idx_dict[each] for each in poi_ids]
-                time_feature = traj_df[args.time_feature].to_list()
+                time_feature = traj_df[args.timestamp_column].to_list()
+                time_feature = [normalize_time(t) for t in time_feature]
 
                 input_seq = []
                 label_seq = []
@@ -166,7 +163,7 @@ def train(args):
                 if len(input_seq) < args.short_traj_thres:
                     continue
 
-                self.traj_seqs.append(traj_id)
+                self.traj_seqs.append((str(user_id), traj_id))
                 self.input_seqs.append(input_seq)
                 self.label_seqs.append(label_seq)
 
@@ -188,18 +185,19 @@ def train(args):
             self.input_seqs = []
             self.label_seqs = []
 
-            for traj_id in tqdm(set(df["trajectory_id"].tolist())):
-                user_id = traj_id.split("_")[0]
+            for traj_id in tqdm(set(df[args.trajectory_id_column].tolist())):
+                # Ger POIs idx in this trajectory
+                traj_df = df[df[args.trajectory_id_column] == traj_id]
 
+                user_id = str(traj_df[args.user_id_column].to_list()[0])
                 # Ignore user if not in training set
                 if user_id not in user_id2idx_dict.keys():
                     continue
 
-                # Ger POIs idx in this trajectory
-                traj_df = df[df["trajectory_id"] == traj_id]
-                poi_ids = traj_df["POI_id"].to_list()
+                poi_ids = traj_df[args.poi_id_column].to_list()
                 poi_idxs = []
-                time_feature = traj_df[args.time_feature].to_list()
+                time_feature = traj_df[args.timestamp_column].to_list()
+                time_feature = [normalize_time(t) for t in time_feature]
 
                 for each in poi_ids:
                     if each in poi_id2idx_dict.keys():
@@ -221,7 +219,7 @@ def train(args):
 
                 self.input_seqs.append(input_seq)
                 self.label_seqs.append(label_seq)
-                self.traj_seqs.append(traj_id)
+                self.traj_seqs.append((str(user_id), traj_id))
 
         def __len__(self):
             assert len(self.input_seqs) == len(self.label_seqs) == len(self.traj_seqs)
@@ -234,7 +232,7 @@ def train(args):
                 self.label_seqs[index],
             )
 
-    # %% ====================== Define dataloader ======================
+    # ====================== Define dataloader ======================
     print("Prepare dataloader...")
     train_dataset = TrajectoryDatasetTrain(train_df)
     val_dataset = TrajectoryDatasetVal(val_df)
@@ -258,7 +256,7 @@ def train(args):
         collate_fn=lambda x: x,
     )
 
-    # %% ====================== Build Models ======================
+    # ====================== Build Models ======================
     # Model1: POI embedding model
     if isinstance(X, np.ndarray):
         X = torch.from_numpy(X)
@@ -275,31 +273,24 @@ def train(args):
     )
 
     # Node Attn Model
-    node_attn_model = NodeAttnMap(
-        in_features=X.shape[1], nhid=args.node_attn_nhid, use_mask=False
-    )
+    node_attn_model = NodeAttnMap(in_features=X.shape[1], nhid=args.node_attn_nhid, use_mask=False)
 
-    # %% Model2: User embedding model, nn.embedding
+    # Model2: User embedding model, nn.embedding
     num_users = len(user_id2idx_dict)
     user_embed_model = UserEmbeddings(num_users, args.user_embed_dim)
 
-    # %% Model3: Time Model
+    # Model3: Time Model
     time_embed_model = Time2Vec("sin", out_dim=args.time_embed_dim)
 
-    # %% Model4: Category embedding model
+    # Model4: Category embedding model
     cat_embed_model = CategoryEmbeddings(num_cats, args.cat_embed_dim)
 
-    # %% Model5: Embedding fusion models
+    # Model5: Embedding fusion models
     embed_fuse_model1 = FuseEmbeddings(args.user_embed_dim, args.poi_embed_dim)
     embed_fuse_model2 = FuseEmbeddings(args.time_embed_dim, args.cat_embed_dim)
 
-    # %% Model6: Sequence model
-    args.seq_input_embed = (
-        args.poi_embed_dim
-        + args.user_embed_dim
-        + args.time_embed_dim
-        + args.cat_embed_dim
-    )
+    # Model6: Sequence model
+    args.seq_input_embed = args.poi_embed_dim + args.user_embed_dim + args.time_embed_dim + args.cat_embed_dim
     seq_model = TransformerModel(
         num_pois,
         num_cats,
@@ -332,16 +323,15 @@ def train(args):
         optimizer, "min", verbose=True, factor=args.lr_scheduler_factor
     )
 
-    # %% Tool functions for training
+    # Tool functions for training
     def input_traj_to_embeddings(sample, poi_embeddings):
         # Parse sample
-        traj_id = sample[0]
+        user_id, traj_id = sample[0]
         input_seq = [each[0] for each in sample[1]]
         input_seq_time = [each[1] for each in sample[1]]
         input_seq_cat = [poi_idx2cat_idx_dict[each] for each in input_seq]
 
         # User to embedding
-        user_id = traj_id.split("_")[0]
         user_idx = user_id2idx_dict[user_id]
         input = torch.LongTensor([user_idx]).to(device=args.device)
         user_embedding = user_embed_model(input)
@@ -355,9 +345,7 @@ def train(args):
 
             # Time to vector
             time_embedding = time_embed_model(
-                torch.tensor([input_seq_time[idx]], dtype=torch.float).to(
-                    device=args.device
-                )
+                torch.tensor([input_seq_time[idx]], dtype=torch.float).to(device=args.device)
             )
             time_embedding = torch.squeeze(time_embedding).to(device=args.device)
 
@@ -385,13 +373,11 @@ def train(args):
         for i in range(len(batch_seq_lens)):
             traj_i_input = batch_input_seqs[i]  # list of input check-in pois
             for j in range(len(traj_i_input)):
-                y_pred_poi_adjusted[i, j, :] = (
-                    attn_map[traj_i_input[j], :] + y_pred_poi[i, j, :]
-                )
+                y_pred_poi_adjusted[i, j, :] = attn_map[traj_i_input[j], :] + y_pred_poi[i, j, :]
 
         return y_pred_poi_adjusted
 
-    # %% ====================== Train ======================
+    # ====================== Train ======================
     poi_embed_model = poi_embed_model.to(device=args.device)
     node_attn_model = node_attn_model.to(device=args.device)
     user_embed_model = user_embed_model.to(device=args.device)
@@ -401,7 +387,7 @@ def train(args):
     embed_fuse_model2 = embed_fuse_model2.to(device=args.device)
     seq_model = seq_model.to(device=args.device)
 
-    # %% Loop epoch
+    # Loop epoch
     # For plotting
     train_epochs_top1_acc_list = []
     train_epochs_top5_acc_list = []
@@ -409,6 +395,7 @@ def train(args):
     train_epochs_top20_acc_list = []
     train_epochs_mAP20_list = []
     train_epochs_mrr_list = []
+    train_epochs_nDCG5_list = []
     train_epochs_loss_list = []
     train_epochs_poi_loss_list = []
     train_epochs_time_loss_list = []
@@ -419,6 +406,7 @@ def train(args):
     val_epochs_top20_acc_list = []
     val_epochs_mAP20_list = []
     val_epochs_mrr_list = []
+    val_epochs_nDCG5_list = []
     val_epochs_loss_list = []
     val_epochs_poi_loss_list = []
     val_epochs_time_loss_list = []
@@ -443,6 +431,7 @@ def train(args):
         train_batches_top20_acc_list = []
         train_batches_mAP20_list = []
         train_batches_mrr_list = []
+        train_batches_nDCG5_list = []
         train_batches_loss_list = []
         train_batches_poi_loss_list = []
         train_batches_time_loss_list = []
@@ -451,9 +440,7 @@ def train(args):
         # Loop batch
         for b_idx, batch in enumerate(train_loader):
             if len(batch) != args.batch:
-                src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(
-                    args.device
-                )
+                src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(args.device)
 
             # For padding
             batch_input_seqs = []
@@ -474,9 +461,7 @@ def train(args):
                 input_seq_time = [each[1] for each in sample[1]]
                 label_seq_time = [each[1] for each in sample[2]]
                 label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
-                input_seq_embed = torch.stack(
-                    input_traj_to_embeddings(sample, poi_embeddings)
-                )
+                input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
                 batch_seq_embeds.append(input_seq_embed)
                 batch_seq_lens.append(len(input_seq))
                 batch_input_seqs.append(input_seq)
@@ -485,18 +470,10 @@ def train(args):
                 batch_seq_labels_cat.append(torch.LongTensor(label_seq_cats))
 
             # Pad seqs for batch training
-            batch_padded = pad_sequence(
-                batch_seq_embeds, batch_first=True, padding_value=-1
-            )
-            label_padded_poi = pad_sequence(
-                batch_seq_labels_poi, batch_first=True, padding_value=-1
-            )
-            label_padded_time = pad_sequence(
-                batch_seq_labels_time, batch_first=True, padding_value=-1
-            )
-            label_padded_cat = pad_sequence(
-                batch_seq_labels_cat, batch_first=True, padding_value=-1
-            )
+            batch_padded = pad_sequence(batch_seq_embeds, batch_first=True, padding_value=-1)
+            label_padded_poi = pad_sequence(batch_seq_labels_poi, batch_first=True, padding_value=-1)
+            label_padded_time = pad_sequence(batch_seq_labels_time, batch_first=True, padding_value=-1)
+            label_padded_cat = pad_sequence(batch_seq_labels_cat, batch_first=True, padding_value=-1)
 
             # Feedforward
             x = batch_padded.to(device=args.device, dtype=torch.float)
@@ -525,13 +502,12 @@ def train(args):
             top20_acc = 0
             mAP20 = 0
             mrr = 0
+            nDCG5 = 0
             batch_label_pois = y_poi.detach().cpu().numpy()
             batch_pred_pois = y_pred_poi_adjusted.detach().cpu().numpy()
             batch_pred_times = y_pred_time.detach().cpu().numpy()
             batch_pred_cats = y_pred_cat.detach().cpu().numpy()
-            for label_pois, pred_pois, seq_len in zip(
-                batch_label_pois, batch_pred_pois, batch_seq_lens
-            ):
+            for label_pois, pred_pois, seq_len in zip(batch_label_pois, batch_pred_pois, batch_seq_lens):
                 label_pois = label_pois[:seq_len]  # shape: (seq_len, )
                 pred_pois = pred_pois[:seq_len, :]  # shape: (seq_len, num_poi)
                 top1_acc += top_k_acc_last_timestep(label_pois, pred_pois, k=1)
@@ -540,12 +516,14 @@ def train(args):
                 top20_acc += top_k_acc_last_timestep(label_pois, pred_pois, k=20)
                 mAP20 += mAP_metric_last_timestep(label_pois, pred_pois, k=20)
                 mrr += MRR_metric_last_timestep(label_pois, pred_pois)
+                nDCG5 += nDCG_last_timestep(label_pois, pred_pois, k=5)
             train_batches_top1_acc_list.append(top1_acc / len(batch_label_pois))
             train_batches_top5_acc_list.append(top5_acc / len(batch_label_pois))
             train_batches_top10_acc_list.append(top10_acc / len(batch_label_pois))
             train_batches_top20_acc_list.append(top20_acc / len(batch_label_pois))
             train_batches_mAP20_list.append(mAP20 / len(batch_label_pois))
             train_batches_mrr_list.append(mrr / len(batch_label_pois))
+            train_batches_nDCG5_list.append(nDCG5 / len(batch_label_pois))
             train_batches_loss_list.append(loss.detach().cpu().numpy())
             train_batches_poi_loss_list.append(loss_poi.detach().cpu().numpy())
             train_batches_time_loss_list.append(loss_time.detach().cpu().numpy())
@@ -568,6 +546,7 @@ def train(args):
                     f"train_move_top20_acc:{np.mean(train_batches_top20_acc_list):.4f}\n"
                     f"train_move_mAP20:{np.mean(train_batches_mAP20_list):.4f}\n"
                     f"train_move_MRR:{np.mean(train_batches_mrr_list):.4f}\n"
+                    f"train_move_nDCG5:{np.mean(train_batches_nDCG5_list):.4f}\n"
                     f"traj_id:{batch[sample_idx][0]}\n"
                     f"input_seq: {batch[sample_idx][1]}\n"
                     f"label_seq:{batch[sample_idx][2]}\n"
@@ -595,6 +574,7 @@ def train(args):
         val_batches_top20_acc_list = []
         val_batches_mAP20_list = []
         val_batches_mrr_list = []
+        val_batches_nDCG5_list = []
         val_batches_loss_list = []
         val_batches_poi_loss_list = []
         val_batches_time_loss_list = []
@@ -602,9 +582,7 @@ def train(args):
         src_mask = seq_model.generate_square_subsequent_mask(args.batch).to(args.device)
         for vb_idx, batch in enumerate(val_loader):
             if len(batch) != args.batch:
-                src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(
-                    args.device
-                )
+                src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(args.device)
 
             # For padding
             batch_input_seqs = []
@@ -624,9 +602,7 @@ def train(args):
                 input_seq_time = [each[1] for each in sample[1]]
                 label_seq_time = [each[1] for each in sample[2]]
                 label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
-                input_seq_embed = torch.stack(
-                    input_traj_to_embeddings(sample, poi_embeddings)
-                )
+                input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
                 batch_seq_embeds.append(input_seq_embed)
                 batch_seq_lens.append(len(input_seq))
                 batch_input_seqs.append(input_seq)
@@ -635,18 +611,10 @@ def train(args):
                 batch_seq_labels_cat.append(torch.LongTensor(label_seq_cats))
 
             # Pad seqs for batch training
-            batch_padded = pad_sequence(
-                batch_seq_embeds, batch_first=True, padding_value=-1
-            )
-            label_padded_poi = pad_sequence(
-                batch_seq_labels_poi, batch_first=True, padding_value=-1
-            )
-            label_padded_time = pad_sequence(
-                batch_seq_labels_time, batch_first=True, padding_value=-1
-            )
-            label_padded_cat = pad_sequence(
-                batch_seq_labels_cat, batch_first=True, padding_value=-1
-            )
+            batch_padded = pad_sequence(batch_seq_embeds, batch_first=True, padding_value=-1)
+            label_padded_poi = pad_sequence(batch_seq_labels_poi, batch_first=True, padding_value=-1)
+            label_padded_time = pad_sequence(batch_seq_labels_time, batch_first=True, padding_value=-1)
+            label_padded_cat = pad_sequence(batch_seq_labels_cat, batch_first=True, padding_value=-1)
 
             # Feedforward
             x = batch_padded.to(device=args.device, dtype=torch.float)
@@ -671,13 +639,12 @@ def train(args):
             top20_acc = 0
             mAP20 = 0
             mrr = 0
+            nDCG5 = 0
             batch_label_pois = y_poi.detach().cpu().numpy()
             batch_pred_pois = y_pred_poi_adjusted.detach().cpu().numpy()
             batch_pred_times = y_pred_time.detach().cpu().numpy()
             batch_pred_cats = y_pred_cat.detach().cpu().numpy()
-            for label_pois, pred_pois, seq_len in zip(
-                batch_label_pois, batch_pred_pois, batch_seq_lens
-            ):
+            for label_pois, pred_pois, seq_len in zip(batch_label_pois, batch_pred_pois, batch_seq_lens):
                 label_pois = label_pois[:seq_len]  # shape: (seq_len, )
                 pred_pois = pred_pois[:seq_len, :]  # shape: (seq_len, num_poi)
                 top1_acc += top_k_acc_last_timestep(label_pois, pred_pois, k=1)
@@ -686,12 +653,14 @@ def train(args):
                 top20_acc += top_k_acc_last_timestep(label_pois, pred_pois, k=20)
                 mAP20 += mAP_metric_last_timestep(label_pois, pred_pois, k=20)
                 mrr += MRR_metric_last_timestep(label_pois, pred_pois)
+                nDCG5 += nDCG_last_timestep(label_pois, pred_pois, k=5)
             val_batches_top1_acc_list.append(top1_acc / len(batch_label_pois))
             val_batches_top5_acc_list.append(top5_acc / len(batch_label_pois))
             val_batches_top10_acc_list.append(top10_acc / len(batch_label_pois))
             val_batches_top20_acc_list.append(top20_acc / len(batch_label_pois))
             val_batches_mAP20_list.append(mAP20 / len(batch_label_pois))
             val_batches_mrr_list.append(mrr / len(batch_label_pois))
+            val_batches_nDCG5_list.append(nDCG5 / len(batch_label_pois))
             val_batches_loss_list.append(loss.detach().cpu().numpy())
             val_batches_poi_loss_list.append(loss_poi.detach().cpu().numpy())
             val_batches_time_loss_list.append(loss_time.detach().cpu().numpy())
@@ -714,6 +683,7 @@ def train(args):
                     f"val_move_top20_acc:{np.mean(val_batches_top20_acc_list):.4f} \n"
                     f"val_move_mAP20:{np.mean(val_batches_mAP20_list):.4f} \n"
                     f"val_move_MRR:{np.mean(val_batches_mrr_list):.4f} \n"
+                    f"val_move_nDCG5:{np.mean(val_batches_nDCG5_list):.4f} \n"
                     f"traj_id:{batch[sample_idx][0]}\n"
                     f"input_seq:{batch[sample_idx][1]}\n"
                     f"label_seq:{batch[sample_idx][2]}\n"
@@ -734,6 +704,7 @@ def train(args):
         epoch_train_top20_acc = np.mean(train_batches_top20_acc_list)
         epoch_train_mAP20 = np.mean(train_batches_mAP20_list)
         epoch_train_mrr = np.mean(train_batches_mrr_list)
+        epoch_train_nDCG5 = np.mean(train_batches_nDCG5_list)
         epoch_train_loss = np.mean(train_batches_loss_list)
         epoch_train_poi_loss = np.mean(train_batches_poi_loss_list)
         epoch_train_time_loss = np.mean(train_batches_time_loss_list)
@@ -744,6 +715,7 @@ def train(args):
         epoch_val_top20_acc = np.mean(val_batches_top20_acc_list)
         epoch_val_mAP20 = np.mean(val_batches_mAP20_list)
         epoch_val_mrr = np.mean(val_batches_mrr_list)
+        epoch_val_nDCG5 = np.mean(val_batches_nDCG5_list)
         epoch_val_loss = np.mean(val_batches_loss_list)
         epoch_val_poi_loss = np.mean(val_batches_poi_loss_list)
         epoch_val_time_loss = np.mean(val_batches_time_loss_list)
@@ -760,6 +732,7 @@ def train(args):
         train_epochs_top20_acc_list.append(epoch_train_top20_acc)
         train_epochs_mAP20_list.append(epoch_train_mAP20)
         train_epochs_mrr_list.append(epoch_train_mrr)
+        train_epochs_nDCG5_list.append(epoch_train_nDCG5)
         val_epochs_loss_list.append(epoch_val_loss)
         val_epochs_poi_loss_list.append(epoch_val_poi_loss)
         val_epochs_time_loss_list.append(epoch_val_time_loss)
@@ -770,6 +743,7 @@ def train(args):
         val_epochs_top20_acc_list.append(epoch_val_top20_acc)
         val_epochs_mAP20_list.append(epoch_val_mAP20)
         val_epochs_mrr_list.append(epoch_val_mrr)
+        val_epochs_nDCG5_list.append(epoch_val_nDCG5)
 
         # Monitor loss and score
         monitor_loss = epoch_val_loss
@@ -790,7 +764,8 @@ def train(args):
             f"train_top10_acc:{epoch_train_top10_acc:.4f}, "
             f"train_top20_acc:{epoch_train_top20_acc:.4f}, "
             f"train_mAP20:{epoch_train_mAP20:.4f}, "
-            f"train_mrr:{epoch_train_mrr:.4f}\n"
+            f"train_mrr:{epoch_train_mrr:.4f}, "
+            f"train_nDCG5:{epoch_train_nDCG5:.4f}\n"
             f"val_loss: {epoch_val_loss:.4f}, "
             f"val_poi_loss: {epoch_val_poi_loss:.4f}, "
             f"val_time_loss: {epoch_val_time_loss:.4f}, "
@@ -800,7 +775,8 @@ def train(args):
             f"val_top10_acc:{epoch_val_top10_acc:.4f}, "
             f"val_top20_acc:{epoch_val_top20_acc:.4f}, "
             f"val_mAP20:{epoch_val_mAP20:.4f}, "
-            f"val_mrr:{epoch_val_mrr:.4f}"
+            f"val_mrr:{epoch_val_mrr:.4f}, "
+            f"val_nDCG5:{epoch_val_nDCG5:.4f}"
         )
 
         # Save poi and user embeddings
@@ -825,9 +801,7 @@ def train(args):
                 user_embedding_list = []
                 for user_idx in range(len(user_id2idx_dict)):
                     input = torch.LongTensor([user_idx]).to(device=args.device)
-                    user_embedding = (
-                        user_embed_model(input).detach().cpu().numpy().flatten()
-                    )
+                    user_embedding = user_embed_model(input).detach().cpu().numpy().flatten()
                     user_embedding_list.append(user_embedding)
                 user_embeddings = np.array(user_embedding_list)
                 np.save(
@@ -838,9 +812,7 @@ def train(args):
                 cat_embedding_list = []
                 for cat_idx in range(len(cat_id2idx_dict)):
                     input = torch.LongTensor([cat_idx]).to(device=args.device)
-                    cat_embedding = (
-                        cat_embed_model(input).detach().cpu().numpy().flatten()
-                    )
+                    cat_embedding = cat_embed_model(input).detach().cpu().numpy().flatten()
                     cat_embedding_list.append(cat_embedding)
                 cat_embeddings = np.array(cat_embedding_list)
                 np.save(
@@ -851,9 +823,7 @@ def train(args):
                 time_embedding_list = []
                 for time_idx in range(args.time_units):
                     input = torch.FloatTensor([time_idx]).to(device=args.device)
-                    time_embedding = (
-                        time_embed_model(input).detach().cpu().numpy().flatten()
-                    )
+                    time_embedding = time_embed_model(input).detach().cpu().numpy().flatten()
                     time_embedding_list.append(time_embedding)
                 time_embeddings = np.array(time_embedding_list)
                 np.save(
@@ -891,6 +861,7 @@ def train(args):
                     "epoch_train_top20_acc": epoch_train_top20_acc,
                     "epoch_train_mAP20": epoch_train_mAP20,
                     "epoch_train_mrr": epoch_train_mrr,
+                    "epoch_train_nDCG5": epoch_train_nDCG5,
                 },
                 "epoch_val_metrics": {
                     "epoch_val_loss": epoch_val_loss,
@@ -903,6 +874,7 @@ def train(args):
                     "epoch_val_top20_acc": epoch_val_top20_acc,
                     "epoch_val_mAP20": epoch_val_mAP20,
                     "epoch_val_mrr": epoch_val_mrr,
+                    "epoch_val_nDCG5": epoch_val_nDCG5,
                 },
             }
             model_save_dir = os.path.join(args.save_dir, "checkpoints")
@@ -957,6 +929,10 @@ def train(args):
                 f'train_epochs_mrr_list={[float(f"{each:.4f}") for each in train_epochs_mrr_list]}',
                 file=f,
             )
+            print(
+                f'train_epochs_nDCG5_list={[float(f"{each:.4f}") for each in train_epochs_nDCG5_list]}',
+                file=f,
+            )
         with open(os.path.join(args.save_dir, "metrics-val.txt"), "w") as f:
             print(
                 f'val_epochs_loss_list={[float(f"{each:.4f}") for each in val_epochs_loss_list]}',
@@ -996,6 +972,10 @@ def train(args):
             )
             print(
                 f'val_epochs_mrr_list={[float(f"{each:.4f}") for each in val_epochs_mrr_list]}',
+                file=f,
+            )
+            print(
+                f'val_epochs_nDCG5_list={[float(f"{each:.4f}") for each in val_epochs_nDCG5_list]}',
                 file=f,
             )
 

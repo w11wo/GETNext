@@ -1,6 +1,8 @@
-""" Build the user-agnostic global trajectory flow map from the sequence data """
+"""Build the user-agnostic global trajectory flow map from the sequence data"""
+
 import os
 import pickle
+from argparse import ArgumentParser
 
 import networkx as nx
 import numpy as np
@@ -8,27 +10,42 @@ import pandas as pd
 from tqdm import tqdm
 
 
-def build_global_POI_checkin_graph(df, exclude_user=None):
+def parse_args():
+    parser = ArgumentParser()
+    parser.add_argument("--csv_path", type=str)
+    parser.add_argument("--output_dir", type=str)
+    parser.add_argument("--poi_id_column", type=str, default="venue_id")
+    parser.add_argument("--poi_catid_column", type=str, default="venue_category_id")
+    parser.add_argument("--poi_catid_code_column", type=str, default="venue_category_id_code")
+    parser.add_argument("--poi_catname_column", type=str, default="venue_category")
+    parser.add_argument("--user_id_column", type=str, default="user_id")
+    parser.add_argument("--trajectory_id_column", type=str, default="trail_id")
+    parser.add_argument("--latitude_column", type=str, default="venue_city_latitude")
+    parser.add_argument("--longitude_column", type=str, default="venue_city_longitude")
+    return parser.parse_args()
+
+
+def build_global_POI_checkin_graph(df, args, exclude_user=None):
     G = nx.DiGraph()
-    users = list(set(df["user_id"].to_list()))
+    users = list(set(df[args.user_id_column].to_list()))
     if exclude_user in users:
         users.remove(exclude_user)
     loop = tqdm(users)
     for user_id in loop:
-        user_df = df[df["user_id"] == user_id]
+        user_df = df[df[args.user_id_column] == user_id]
 
         # Add node (POI)
         for i, row in user_df.iterrows():
-            node = row["POI_id"]
+            node = row[args.poi_id_column]
             if node not in G.nodes():
                 G.add_node(
-                    row["POI_id"],
+                    row[args.poi_id_column],
                     checkin_cnt=1,
-                    poi_catid=row["POI_catid"],
-                    poi_catid_code=row["POI_catid_code"],
-                    poi_catname=row["POI_catname"],
-                    latitude=row["latitude"],
-                    longitude=row["longitude"],
+                    poi_catid=row[args.poi_catid_column],
+                    poi_catid_code=row[args.poi_catid_code_column],
+                    poi_catname=row[args.poi_catname_column],
+                    latitude=row[args.latitude_column],
+                    longitude=row[args.longitude_column],
                 )
             else:
                 G.nodes[node]["checkin_cnt"] += 1
@@ -37,8 +54,8 @@ def build_global_POI_checkin_graph(df, exclude_user=None):
         previous_poi_id = 0
         previous_traj_id = 0
         for i, row in user_df.iterrows():
-            poi_id = row["POI_id"]
-            traj_id = row["trajectory_id"]
+            poi_id = row[args.poi_id_column]
+            traj_id = row[args.trajectory_id_column]
             # No edge for the begin of the seq or different traj
             if (previous_poi_id == 0) or (previous_traj_id != traj_id):
                 previous_poi_id = poi_id
@@ -83,9 +100,7 @@ def save_graph_to_csv(G, dst_dir):
             latitude = each[1]["latitude"]
             longitude = each[1]["longitude"]
             print(
-                f"{node_name},{checkin_cnt},"
-                f"{poi_catid},{poi_catid_code},{poi_catname},"
-                f"{latitude},{longitude}",
+                f"{node_name},{checkin_cnt}," f"{poi_catid},{poi_catid_code},{poi_catname}," f"{latitude},{longitude}",
                 file=f,
             )
 
@@ -105,7 +120,7 @@ def save_graph_edgelist(G, dst_dir):
     with open(os.path.join(dst_dir, "graph_edge.edgelist"), "w") as f:
         for edge in nx.generate_edgelist(G, data=["weight"]):
             src_node, dst_node, weight = edge.split(" ")
-            print(f"{node_id2idx[src_node]} {node_id2idx[dst_node]} {weight}", file=f)
+            print(f"{node_id2idx[int(src_node)]} {node_id2idx[int(dst_node)]} {weight}", file=f)
 
 
 def load_graph_adj_mtx(path):
@@ -151,14 +166,13 @@ def print_graph_statisics(G):
 
 
 if __name__ == "__main__":
-    dst_dir = r"dataset/NYC"
+    args = parse_args()
 
     # Build POI checkin trajectory graph
-    train_df = pd.read_csv(os.path.join(dst_dir, "NYC_train.csv"))
-    print("Build global POI checkin graph -----------------------------------")
-    G = build_global_POI_checkin_graph(train_df)
+    train_df = pd.read_csv(args.csv_path)
+    G = build_global_POI_checkin_graph(train_df, args)
 
     # Save graph to disk
-    save_graph_to_pickle(G, dst_dir=dst_dir)
-    save_graph_to_csv(G, dst_dir=dst_dir)
-    save_graph_edgelist(G, dst_dir=dst_dir)
+    save_graph_to_pickle(G, dst_dir=args.output_dir)
+    save_graph_to_csv(G, dst_dir=args.output_dir)
+    save_graph_edgelist(G, dst_dir=args.output_dir)

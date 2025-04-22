@@ -1,4 +1,4 @@
-torch==1.7.1
+torch==2.1.0
 numpy==1.19.2
 prettytable==2.0.0
 matplotlib==3.3.4
@@ -10,3 +10,4 @@ data==0.4
 PyYAML==6.0
 scikit_learn==1.0.2
 torchsummary==1.5.1
+networkx<2.7

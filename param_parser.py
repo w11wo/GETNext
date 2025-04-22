@@ -1,4 +1,5 @@
 """Parsing the parameters."""
+
 import argparse
 
 import torch
@@ -38,29 +39,22 @@ def parameter_parser():
         default="dataset/NYC/NYC_val.csv",
         help="Validation data path",
     )
-    parser.add_argument(
-        "--short-traj-thres", type=int, default=2, help="Remove over-short trajectory"
-    )
-    parser.add_argument(
-        "--time-units", type=int, default=48, help="Time unit is 0.5 hour, 24/0.5=48"
-    )
-    parser.add_argument(
-        "--time-feature",
-        type=str,
-        default="norm_in_day_time",
-        help="The name of time feature in the data",
-    )
+    parser.add_argument("--short-traj-thres", type=int, default=2, help="Remove over-short trajectory")
+    parser.add_argument("--time-units", type=int, default=48, help="Time unit is 0.5 hour, 24/0.5=48")
+    parser.add_argument("--timestamp_column", type=str, default="timestamp")
+    parser.add_argument("--poi_id_column", type=str, default="venue_id")
+    parser.add_argument("--poi_catid_column", type=str, default="venue_category_id")
+    parser.add_argument("--poi_catid_code_column", type=str, default="venue_category_id_code")
+    parser.add_argument("--poi_catname_column", type=str, default="venue_category")
+    parser.add_argument("--user_id_column", type=str, default="user_id")
+    parser.add_argument("--trajectory_id_column", type=str, default="trail_id")
+    parser.add_argument("--latitude_column", type=str, default="venue_city_latitude")
+    parser.add_argument("--longitude_column", type=str, default="venue_city_longitude")
 
     # Model hyper-parameters
-    parser.add_argument(
-        "--poi-embed-dim", type=int, default=128, help="POI embedding dimensions"
-    )
-    parser.add_argument(
-        "--user-embed-dim", type=int, default=128, help="User embedding dimensions"
-    )
-    parser.add_argument(
-        "--gcn-dropout", type=float, default=0.3, help="Dropout rate for gcn"
-    )
+    parser.add_argument("--poi-embed-dim", type=int, default=128, help="POI embedding dimensions")
+    parser.add_argument("--user-embed-dim", type=int, default=128, help="User embedding dimensions")
+    parser.add_argument("--gcn-dropout", type=float, default=0.3, help="Dropout rate for gcn")
     parser.add_argument(
         "--gcn-nhid",
         type=list,
@@ -91,12 +85,8 @@ def parameter_parser():
         default=0.3,
         help="Dropout rate for transformer",
     )
-    parser.add_argument(
-        "--time-embed-dim", type=int, default=32, help="Time embedding dimensions"
-    )
-    parser.add_argument(
-        "--cat-embed-dim", type=int, default=32, help="Category embedding dimensions"
-    )
+    parser.add_argument("--time-embed-dim", type=int, default=32, help="Time embedding dimensions")
+    parser.add_argument("--cat-embed-dim", type=int, default=32, help="Category embedding dimensions")
     parser.add_argument(
         "--time-loss-weight",
         type=int,
@@ -112,12 +102,8 @@ def parameter_parser():
 
     # Training hyper-parameters
     parser.add_argument("--batch", type=int, default=20, help="Batch size.")
-    parser.add_argument(
-        "--epochs", type=int, default=200, help="Number of epochs to train."
-    )
-    parser.add_argument(
-        "--lr", type=float, default=0.001, help="Initial learning rate."
-    )
+    parser.add_argument("--epochs", type=int, default=200, help="Number of epochs to train.")
+    parser.add_argument("--lr", type=float, default=0.001, help="Initial learning rate.")
     parser.add_argument(
         "--lr-scheduler-factor",
         type=float,
@@ -144,9 +130,7 @@ def parameter_parser():
         default=False,
         help="whether save the embeddings",
     )
-    parser.add_argument(
-        "--workers", type=int, default=0, help="Num of workers for dataloader."
-    )
+    parser.add_argument("--workers", type=int, default=0, help="Num of workers for dataloader.")
     parser.add_argument("--project", default="runs/train", help="save to project/name")
     parser.add_argument("--name", default="exp", help="save to project/name")
     parser.add_argument(
@@ -154,14 +138,8 @@ def parameter_parser():
         action="store_true",
         help="existing project/name ok, do not increment",
     )
-    parser.add_argument(
-        "--no-cuda", action="store_true", default=False, help="Disables CUDA training."
-    )
-    parser.add_argument(
-        "--mode", type=str, default="client", help="python console use only"
-    )
-    parser.add_argument(
-        "--port", type=int, default=64973, help="python console use only"
-    )
+    parser.add_argument("--no-cuda", action="store_true", default=False, help="Disables CUDA training.")
+    parser.add_argument("--mode", type=str, default="client", help="python console use only")
+    parser.add_argument("--port", type=int, default=64973, help="python console use only")
 
     return parser.parse_args()
