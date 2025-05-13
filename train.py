@@ -241,7 +241,7 @@ def train(args):
         train_dataset,
         batch_size=args.batch,
         shuffle=True,
-        drop_last=False,
+        drop_last=True,
         pin_memory=True,
         num_workers=args.workers,
         collate_fn=lambda x: x,
@@ -250,7 +250,7 @@ def train(args):
         val_dataset,
         batch_size=args.batch,
         shuffle=False,
-        drop_last=False,
+        drop_last=True,
         pin_memory=True,
         num_workers=args.workers,
         collate_fn=lambda x: x,
@@ -263,6 +263,7 @@ def train(args):
         A = torch.from_numpy(A)
     X = X.to(device=args.device, dtype=torch.float)
     A = A.to(device=args.device, dtype=torch.float)
+    A_plus_one = A.clone() + 1
 
     args.gcn_nfeat = X.shape[1]
     poi_embed_model = GCN(
@@ -368,7 +369,7 @@ def train(args):
 
     def adjust_pred_prob_by_graph(y_pred_poi):
         y_pred_poi_adjusted = torch.zeros_like(y_pred_poi)
-        attn_map = node_attn_model(X, A)
+        attn_map = node_attn_model(X, A_plus_one)
 
         for i in range(len(batch_seq_lens)):
             traj_i_input = batch_input_seqs[i]  # list of input check-in pois
@@ -414,6 +415,8 @@ def train(args):
     # For saving ckpt
     max_val_score = -np.inf
 
+    scaler = torch.cuda.amp.GradScaler()
+
     for epoch in range(args.epochs):
         logging.info(f"{'*' * 50}Epoch:{epoch:03d}{'*' * 50}\n")
         poi_embed_model.train()
@@ -439,61 +442,64 @@ def train(args):
         src_mask = seq_model.generate_square_subsequent_mask(args.batch).to(args.device)
         # Loop batch
         for b_idx, batch in enumerate(train_loader):
-            if len(batch) != args.batch:
-                src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(args.device)
+            with torch.amp.autocast(device_type=torch.device(args.device).type, dtype=torch.float16):
+                if len(batch) != args.batch:
+                    src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(args.device)
 
-            # For padding
-            batch_input_seqs = []
-            batch_seq_lens = []
-            batch_seq_embeds = []
-            batch_seq_labels_poi = []
-            batch_seq_labels_time = []
-            batch_seq_labels_cat = []
+                # For padding
+                batch_input_seqs = []
+                batch_seq_lens = []
+                batch_seq_embeds = []
+                batch_seq_labels_poi = []
+                batch_seq_labels_time = []
+                batch_seq_labels_cat = []
 
-            poi_embeddings = poi_embed_model(X, A)
+                poi_embeddings = poi_embed_model(X, A)
 
-            # Convert input seq to embeddings
-            for sample in batch:
-                # sample[0]: traj_id, sample[1]: input_seq, sample[2]: label_seq
-                traj_id = sample[0]
-                input_seq = [each[0] for each in sample[1]]
-                label_seq = [each[0] for each in sample[2]]
-                input_seq_time = [each[1] for each in sample[1]]
-                label_seq_time = [each[1] for each in sample[2]]
-                label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
-                input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
-                batch_seq_embeds.append(input_seq_embed)
-                batch_seq_lens.append(len(input_seq))
-                batch_input_seqs.append(input_seq)
-                batch_seq_labels_poi.append(torch.LongTensor(label_seq))
-                batch_seq_labels_time.append(torch.FloatTensor(label_seq_time))
-                batch_seq_labels_cat.append(torch.LongTensor(label_seq_cats))
+                # Convert input seq to embeddings
+                for sample in batch:
+                    # sample[0]: traj_id, sample[1]: input_seq, sample[2]: label_seq
+                    traj_id = sample[0]
+                    input_seq = [each[0] for each in sample[1]]
+                    label_seq = [each[0] for each in sample[2]]
+                    input_seq_time = [each[1] for each in sample[1]]
+                    label_seq_time = [each[1] for each in sample[2]]
+                    label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
+                    input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
+                    batch_seq_embeds.append(input_seq_embed)
+                    batch_seq_lens.append(len(input_seq))
+                    batch_input_seqs.append(input_seq)
+                    batch_seq_labels_poi.append(torch.LongTensor(label_seq))
+                    batch_seq_labels_time.append(torch.FloatTensor(label_seq_time))
+                    batch_seq_labels_cat.append(torch.LongTensor(label_seq_cats))
 
-            # Pad seqs for batch training
-            batch_padded = pad_sequence(batch_seq_embeds, batch_first=True, padding_value=-1)
-            label_padded_poi = pad_sequence(batch_seq_labels_poi, batch_first=True, padding_value=-1)
-            label_padded_time = pad_sequence(batch_seq_labels_time, batch_first=True, padding_value=-1)
-            label_padded_cat = pad_sequence(batch_seq_labels_cat, batch_first=True, padding_value=-1)
+                # Pad seqs for batch training
+                batch_padded = pad_sequence(batch_seq_embeds, batch_first=True, padding_value=-1)
+                label_padded_poi = pad_sequence(batch_seq_labels_poi, batch_first=True, padding_value=-1)
+                label_padded_time = pad_sequence(batch_seq_labels_time, batch_first=True, padding_value=-1)
+                label_padded_cat = pad_sequence(batch_seq_labels_cat, batch_first=True, padding_value=-1)
 
-            # Feedforward
-            x = batch_padded.to(device=args.device, dtype=torch.float)
-            y_poi = label_padded_poi.to(device=args.device, dtype=torch.long)
-            y_time = label_padded_time.to(device=args.device, dtype=torch.float)
-            y_cat = label_padded_cat.to(device=args.device, dtype=torch.long)
-            y_pred_poi, y_pred_time, y_pred_cat = seq_model(x, src_mask)
+                # Feedforward
+                x = batch_padded.to(device=args.device, dtype=torch.float)
+                y_poi = label_padded_poi.to(device=args.device, dtype=torch.long)
+                y_time = label_padded_time.to(device=args.device, dtype=torch.float)
+                y_cat = label_padded_cat.to(device=args.device, dtype=torch.long)
+                y_pred_poi, y_pred_time, y_pred_cat = seq_model(x, src_mask)
 
-            # Graph Attention adjusted prob
-            y_pred_poi_adjusted = adjust_pred_prob_by_graph(y_pred_poi)
+                # Graph Attention adjusted prob
+                y_pred_poi_adjusted = adjust_pred_prob_by_graph(y_pred_poi)
 
-            loss_poi = criterion_poi(y_pred_poi_adjusted.transpose(1, 2), y_poi)
-            loss_time = criterion_time(torch.squeeze(y_pred_time), y_time)
-            loss_cat = criterion_cat(y_pred_cat.transpose(1, 2), y_cat)
+                loss_poi = criterion_poi(y_pred_poi_adjusted.transpose(1, 2), y_poi)
+                loss_time = criterion_time(torch.squeeze(y_pred_time), y_time)
+                loss_cat = criterion_cat(y_pred_cat.transpose(1, 2), y_cat)
 
-            # Final loss
-            loss = loss_poi + loss_time * args.time_loss_weight + loss_cat
+                # Final loss
+                loss = loss_poi + loss_time * args.time_loss_weight + loss_cat
+
             optimizer.zero_grad()
-            loss.backward(retain_graph=True)
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             # Performance measurement
             top1_acc = 0
@@ -581,56 +587,58 @@ def train(args):
         val_batches_cat_loss_list = []
         src_mask = seq_model.generate_square_subsequent_mask(args.batch).to(args.device)
         for vb_idx, batch in enumerate(val_loader):
-            if len(batch) != args.batch:
-                src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(args.device)
+            with torch.no_grad():
+                with torch.amp.autocast(device_type=torch.device(args.device).type, dtype=torch.float16):
+                    if len(batch) != args.batch:
+                        src_mask = seq_model.generate_square_subsequent_mask(len(batch)).to(args.device)
 
-            # For padding
-            batch_input_seqs = []
-            batch_seq_lens = []
-            batch_seq_embeds = []
-            batch_seq_labels_poi = []
-            batch_seq_labels_time = []
-            batch_seq_labels_cat = []
+                    # For padding
+                    batch_input_seqs = []
+                    batch_seq_lens = []
+                    batch_seq_embeds = []
+                    batch_seq_labels_poi = []
+                    batch_seq_labels_time = []
+                    batch_seq_labels_cat = []
 
-            poi_embeddings = poi_embed_model(X, A)
+                    poi_embeddings = poi_embed_model(X, A)
 
-            # Convert input seq to embeddings
-            for sample in batch:
-                traj_id = sample[0]
-                input_seq = [each[0] for each in sample[1]]
-                label_seq = [each[0] for each in sample[2]]
-                input_seq_time = [each[1] for each in sample[1]]
-                label_seq_time = [each[1] for each in sample[2]]
-                label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
-                input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
-                batch_seq_embeds.append(input_seq_embed)
-                batch_seq_lens.append(len(input_seq))
-                batch_input_seqs.append(input_seq)
-                batch_seq_labels_poi.append(torch.LongTensor(label_seq))
-                batch_seq_labels_time.append(torch.FloatTensor(label_seq_time))
-                batch_seq_labels_cat.append(torch.LongTensor(label_seq_cats))
+                    # Convert input seq to embeddings
+                    for sample in batch:
+                        traj_id = sample[0]
+                        input_seq = [each[0] for each in sample[1]]
+                        label_seq = [each[0] for each in sample[2]]
+                        input_seq_time = [each[1] for each in sample[1]]
+                        label_seq_time = [each[1] for each in sample[2]]
+                        label_seq_cats = [poi_idx2cat_idx_dict[each] for each in label_seq]
+                        input_seq_embed = torch.stack(input_traj_to_embeddings(sample, poi_embeddings))
+                        batch_seq_embeds.append(input_seq_embed)
+                        batch_seq_lens.append(len(input_seq))
+                        batch_input_seqs.append(input_seq)
+                        batch_seq_labels_poi.append(torch.LongTensor(label_seq))
+                        batch_seq_labels_time.append(torch.FloatTensor(label_seq_time))
+                        batch_seq_labels_cat.append(torch.LongTensor(label_seq_cats))
 
-            # Pad seqs for batch training
-            batch_padded = pad_sequence(batch_seq_embeds, batch_first=True, padding_value=-1)
-            label_padded_poi = pad_sequence(batch_seq_labels_poi, batch_first=True, padding_value=-1)
-            label_padded_time = pad_sequence(batch_seq_labels_time, batch_first=True, padding_value=-1)
-            label_padded_cat = pad_sequence(batch_seq_labels_cat, batch_first=True, padding_value=-1)
+                    # Pad seqs for batch training
+                    batch_padded = pad_sequence(batch_seq_embeds, batch_first=True, padding_value=-1)
+                    label_padded_poi = pad_sequence(batch_seq_labels_poi, batch_first=True, padding_value=-1)
+                    label_padded_time = pad_sequence(batch_seq_labels_time, batch_first=True, padding_value=-1)
+                    label_padded_cat = pad_sequence(batch_seq_labels_cat, batch_first=True, padding_value=-1)
 
-            # Feedforward
-            x = batch_padded.to(device=args.device, dtype=torch.float)
-            y_poi = label_padded_poi.to(device=args.device, dtype=torch.long)
-            y_time = label_padded_time.to(device=args.device, dtype=torch.float)
-            y_cat = label_padded_cat.to(device=args.device, dtype=torch.long)
-            y_pred_poi, y_pred_time, y_pred_cat = seq_model(x, src_mask)
+                    # Feedforward
+                    x = batch_padded.to(device=args.device, dtype=torch.float)
+                    y_poi = label_padded_poi.to(device=args.device, dtype=torch.long)
+                    y_time = label_padded_time.to(device=args.device, dtype=torch.float)
+                    y_cat = label_padded_cat.to(device=args.device, dtype=torch.long)
+                    y_pred_poi, y_pred_time, y_pred_cat = seq_model(x, src_mask)
 
-            # Graph Attention adjusted prob
-            y_pred_poi_adjusted = adjust_pred_prob_by_graph(y_pred_poi)
+                    # Graph Attention adjusted prob
+                    y_pred_poi_adjusted = adjust_pred_prob_by_graph(y_pred_poi)
 
-            # Calculate loss
-            loss_poi = criterion_poi(y_pred_poi_adjusted.transpose(1, 2), y_poi)
-            loss_time = criterion_time(torch.squeeze(y_pred_time), y_time)
-            loss_cat = criterion_cat(y_pred_cat.transpose(1, 2), y_cat)
-            loss = loss_poi + loss_time * args.time_loss_weight + loss_cat
+                    # Calculate loss
+                    loss_poi = criterion_poi(y_pred_poi_adjusted.transpose(1, 2), y_poi)
+                    loss_time = criterion_time(torch.squeeze(y_pred_time), y_time)
+                    loss_cat = criterion_cat(y_pred_cat.transpose(1, 2), y_cat)
+                    loss = loss_poi + loss_time * args.time_loss_weight + loss_cat
 
             # Performance measurement
             top1_acc = 0
@@ -848,7 +856,7 @@ def train(args):
                 "poi_id2idx_dict": poi_id2idx_dict,
                 "cat_id2idx_dict": cat_id2idx_dict,
                 "poi_idx2cat_idx_dict": poi_idx2cat_idx_dict,
-                "node_attn_map": node_attn_model(X, A),
+                "node_attn_map": node_attn_model(X, A_plus_one),
                 "args": args,
                 "epoch_train_metrics": {
                     "epoch_train_loss": epoch_train_loss,

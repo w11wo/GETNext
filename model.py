@@ -17,16 +17,14 @@ class NodeAttnMap(nn.Module):
         nn.init.xavier_uniform_(self.a.data, gain=1.414)
         self.leakyrelu = nn.LeakyReLU(0.2)
 
-    def forward(self, X, A):
+    def forward(self, X, A_plus_one):
         Wh = torch.mm(X, self.W)
 
         e = self._prepare_attentional_mechanism_input(Wh)
 
-        if self.use_mask:
-            e = torch.where(A > 0, e, torch.zeros_like(e))  # mask
-
-        A = A + 1  # shift from 0-1 to 1-2
-        e = e * A
+        # A = A + 1  # shift from 0-1 to 1-2
+        # e = e * A
+        e *= A_plus_one
 
         return e
 

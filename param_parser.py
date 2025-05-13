@@ -121,7 +121,7 @@ def parameter_parser():
     parser.add_argument(
         "--save-weights",
         action="store_true",
-        default=True,
+        default=False,
         help="whether save the model",
     )
     parser.add_argument(
